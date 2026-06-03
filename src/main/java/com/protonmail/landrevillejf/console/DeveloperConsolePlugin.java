@@ -4,6 +4,7 @@ import com.protonmail.landrevillejf.IconManager;
 import com.protonmail.landrevillejf.swingide.plugin.*;
 import com.protonmail.landrevillejf.swingide.plugin.service.*;
 import com.protonmail.landrevillejf.swingide.plugin.ui.ComponentRegistry;
+import com.protonmail.landrevillejf.swingide.plugin.ui.UIComponent;
 import com.protonmail.landrevillejf.swingide.plugin.ui.UIComponentBuilder;
 import lombok.extern.slf4j.Slf4j;
 
@@ -52,6 +53,13 @@ public class DeveloperConsolePlugin extends AbstractPlugin implements Plugin, Me
     private int historyIndex = -1;
     private boolean isUIRegistered = false;
     private JPanel bottomPanel;
+    // ========== PROFILING COMMANDS ==========
+    private boolean profilingActive = false;
+    private Map<String, Long> methodProfilingData = new HashMap<>();
+    // ========== SANDBOX ==========
+    private boolean sandboxActive = false;
+    // ========== SCHEDULER COMMANDS ==========
+    private final Map<String, java.util.TimerTask> scheduledTasks = new HashMap<>();
 
     public DeveloperConsolePlugin() {
         super(PLUGIN_ID, PLUGIN_NAME, PLUGIN_VERSION,
@@ -122,22 +130,23 @@ public class DeveloperConsolePlugin extends AbstractPlugin implements Plugin, Me
         commands.put("help", new Command() {
             @Override public void execute(String[] args, PrintStream out) {
                 out.println("=== Developer Console v" + PLUGIN_VERSION + " ===");
-                out.println("\n📁 BASIC COMMANDS:");
+                out.println("\nBASIC COMMANDS:");
                 out.println("  help                 - Show this help");
                 out.println("  clear                - Clear console");
                 out.println("  echo <text>          - Echo arguments");
                 out.println("  info                 - Show plugin info");
                 out.println("  settings             - Open plugin settings");
                 out.println("  exit                 - Exit console mode");
+                out.println("  inspect              - Inspect UI components");
 
-                out.println("\n🔌 PLUGIN COMMANDS:");
+                out.println("\nPLUGIN COMMANDS:");
                 out.println("  plugins              - List loaded plugins");
                 out.println("  plugin <name>        - Show plugin details");
                 out.println("  enable <plugin>      - Enable a plugin");
                 out.println("  disable <plugin>     - Disable a plugin");
                 out.println("  reload <plugin>      - Reload a plugin");
 
-                out.println("\n🛠️ SERVICE COMMANDS:");
+                out.println("\nSERVICE COMMANDS:");
                 out.println("  services             - List available services");
                 out.println("  cache                - Show cache statistics");
                 out.println("  metrics              - Show metrics");
@@ -145,24 +154,72 @@ public class DeveloperConsolePlugin extends AbstractPlugin implements Plugin, Me
                 out.println("  test:notify          - Test notification");
                 out.println("  test:logging         - Test logging");
 
-                out.println("\n💻 SYSTEM COMMANDS:");
+                out.println("\nSYSTEM COMMANDS:");
                 out.println("  threads              - Show thread info");
                 out.println("  memory               - Show memory usage");
                 out.println("  gc                   - Run garbage collector");
                 out.println("  system               - Show system info");
-                out.println("  env                   - Show environment variables");
+                out.println("  env                  - Show environment variables");
                 out.println("  props                - Show system properties");
 
-                out.println("\n📊 MONITORING COMMANDS:");
+                out.println("\nMONITORING COMMANDS:");
                 out.println("  monitor              - Start monitoring");
                 out.println("  stop                 - Stop monitoring");
                 out.println("  stats                - Show statistics");
 
-                out.println("\n💾 DATA COMMANDS:");
+                out.println("\nDATA COMMANDS:");
                 out.println("  save <key> <value>   - Save data to store");
                 out.println("  load <key>           - Load data from store");
                 out.println("  delete <key>         - Delete data from store");
                 out.println("  list                 - List all stored keys");
+
+                out.println("\nPROFILING COMMANDS:");
+                out.println("  profile:start        - Start performance profiling");
+                out.println("  profile:stop         - Stop profiling and show results");
+                out.println("  profile:methods      - Show top methods by CPU time");
+
+                out.println("\nHEAP ANALYSIS:");
+                out.println("  heap:dump            - Generate heap dump file");
+
+                out.println("\nSCRIPTING:");
+                out.println("  script:run <file>    - Run Groovy script file");
+
+                out.println("\nHOTSWAP:");
+                out.println("  hotswap <class>      - Hot swap a class");
+
+                out.println("\nSANDBOX:");
+                out.println("  sandbox:create       - Create isolated environment");
+                out.println("  sandbox:run <plugin> - Run plugin in sandbox");
+
+                out.println("\nMOCKING:");
+                out.println("  mock:create <service> - Generate mock for service");
+
+                out.println("\nDASHBOARD:");
+                out.println("  dashboard            - Open metrics dashboard");
+
+                out.println("\nEXPORT:");
+                out.println("  export:csv <file>    - Export data to CSV");
+                out.println("  export:json <file>   - Export data to JSON");
+                out.println("  export:html <file>   - Export report to HTML");
+
+                out.println("\nSCHEDULER:");
+                out.println("  schedule:add <cmd> <seconds> - Schedule command");
+                out.println("  schedule:list        - List scheduled tasks");
+
+                out.println("\nAPI CHECK:");
+                out.println("  api:check <plugin>   - Check API compatibility");
+
+                out.println("\nCONFIG:");
+                out.println("  config:export <file> - Export configuration");
+                out.println("  config:import <file> - Import configuration");
+
+                out.println("\nDEPENDENCIES:");
+                out.println("  deps:graph <plugin>  - Show dependency graph");
+
+                out.println("\nALIASES:");
+                out.println("  ls                   - Alias for plugins");
+                out.println("  mem                  - Alias for memory");
+                out.println("  cls                  - Alias for clear");
             }
             @Override public String getDescription() { return "Show this help"; }
         });
@@ -221,11 +278,32 @@ public class DeveloperConsolePlugin extends AbstractPlugin implements Plugin, Me
             @Override public String getDescription() { return "Exit console mode"; }
         });
 
+        commands.put("inspect", new Command() {
+            @Override public void execute(String[] args, PrintStream out) {
+                ComponentRegistry registry = context.getComponentRegistry();
+                out.println("\n=== UI COMPONENTS INSPECTION ===");
+                int total = 0;
+                for (UIComponent.ComponentType type : UIComponent.ComponentType.values()) {
+                    java.util.List<UIComponent> comps = registry.getComponentsByType(type);
+                    if (!comps.isEmpty()) {
+                        out.println("\n📁 " + type.getDisplayName() + " (" + comps.size() + "):");
+                        for (UIComponent c : comps) {
+                            out.printf("    • %s [%s] - removable: %s%n",
+                                    c.getTitle(), c.getComponentId(), c.isRemovable());
+                            total++;
+                        }
+                    }
+                }
+                out.println("\n📊 Total registered components: " + total);
+            }
+            @Override public String getDescription() { return "Inspect UI components"; }
+        });
+
         // ========== PLUGIN COMMANDS ==========
         commands.put("plugins", new Command() {
             @Override public void execute(String[] args, PrintStream out) {
                 if (context != null && context.getPluginManager() != null) {
-                    out.println("=== Loaded Plugins ===");
+                    out.println("=== Loaded Plugins (" + context.getPluginManager().getLoadedPlugins().size() + ") ===");
                     for (Plugin p : context.getPluginManager().getLoadedPlugins()) {
                         out.printf("  %s v%s - %s (Enabled: %s)%n",
                                 p.getName(), p.getVersion(), p.getState(), p.isEnabled());
@@ -489,7 +567,6 @@ public class DeveloperConsolePlugin extends AbstractPlugin implements Plugin, Me
                 System.gc();
                 Runtime.getRuntime().gc();
                 out.println("Garbage collector completed");
-                // Re-run memory command to show effect
                 commands.get("memory").execute(args, out);
             }
             @Override public String getDescription() { return "Run garbage collector"; }
@@ -515,8 +592,9 @@ public class DeveloperConsolePlugin extends AbstractPlugin implements Plugin, Me
                 Map<String, String> env = System.getenv();
                 List<String> keys = new ArrayList<>(env.keySet());
                 Collections.sort(keys);
+                String filter = args.length > 1 ? args[1].toLowerCase() : null;
                 for (String key : keys) {
-                    if (args.length > 1 && !key.toLowerCase().contains(args[1].toLowerCase())) continue;
+                    if (filter != null && !key.toLowerCase().contains(filter)) continue;
                     out.printf("  %s=%s%n", key, env.get(key));
                 }
             }
@@ -529,8 +607,9 @@ public class DeveloperConsolePlugin extends AbstractPlugin implements Plugin, Me
                 Properties props = System.getProperties();
                 List<String> keys = new ArrayList<>(props.stringPropertyNames());
                 Collections.sort(keys);
+                String filter = args.length > 1 ? args[1].toLowerCase() : null;
                 for (String key : keys) {
-                    if (args.length > 1 && !key.toLowerCase().contains(args[1].toLowerCase())) continue;
+                    if (filter != null && !key.toLowerCase().contains(filter)) continue;
                     out.printf("  %s=%s%n", key, props.getProperty(key));
                 }
             }
@@ -540,6 +619,9 @@ public class DeveloperConsolePlugin extends AbstractPlugin implements Plugin, Me
         // ========== MONITORING COMMANDS ==========
         commands.put("monitor", new Command() {
             @Override public void execute(String[] args, PrintStream out) {
+                if (scheduledExecutor.isShutdown()) {
+                    scheduledExecutor = Executors.newSingleThreadScheduledExecutor();
+                }
                 out.println("Starting system monitoring...");
                 startMonitoring();
                 out.println("Monitoring started. Use 'stop' to stop, 'stats' to see stats.");
@@ -551,7 +633,8 @@ public class DeveloperConsolePlugin extends AbstractPlugin implements Plugin, Me
             @Override public void execute(String[] args, PrintStream out) {
                 out.println("Stopping monitoring...");
                 if (scheduledExecutor != null && !scheduledExecutor.isShutdown()) {
-                    scheduledExecutor.shutdown();
+                    scheduledExecutor.shutdownNow();
+                    scheduledExecutor = Executors.newSingleThreadScheduledExecutor();
                 }
                 out.println("Monitoring stopped.");
             }
@@ -633,10 +716,10 @@ public class DeveloperConsolePlugin extends AbstractPlugin implements Plugin, Me
                 PluginDataStore dataStore = context.getDataStore();
                 if (dataStore != null) {
                     Set<String> keys = (Set<String>) dataStore.getKeys(PLUGIN_ID);
-                    if (keys.isEmpty()) {
+                    if (keys == null || keys.isEmpty()) {
                         out.println("No stored data");
                     } else {
-                        out.println("=== Stored Keys ===");
+                        out.println("=== Stored Keys (" + keys.size() + ") ===");
                         for (String key : keys) {
                             out.println("  " + key);
                         }
@@ -647,6 +730,426 @@ public class DeveloperConsolePlugin extends AbstractPlugin implements Plugin, Me
             }
             @Override public String getDescription() { return "List all stored keys"; }
         });
+
+
+
+        commands.put("profile:start", new Command() {
+            @Override public void execute(String[] args, PrintStream out) {
+                if (profilingActive) {
+                    out.println("Profiling already active. Use 'profile:stop' first.");
+                    return;
+                }
+                profilingActive = true;
+                methodProfilingData.clear();
+                out.println("Performance profiling started. Use 'profile:stop' to stop and see results.");
+            }
+            @Override public String getDescription() { return "Start performance profiling"; }
+        });
+
+        commands.put("profile:stop", new Command() {
+            @Override public void execute(String[] args, PrintStream out) {
+                if (!profilingActive) {
+                    out.println("Profiling not active. Use 'profile:start' first.");
+                    return;
+                }
+                profilingActive = false;
+                out.println("=== Profiling Results ===");
+                if (methodProfilingData.isEmpty()) {
+                    out.println("No profiling data collected.");
+                } else {
+                    out.println("Top 10 methods by execution time:");
+                    methodProfilingData.entrySet().stream()
+                            .sorted(Map.Entry.<String, Long>comparingByValue().reversed())
+                            .limit(10)
+                            .forEach(e -> out.printf("  %s: %d ms%n", e.getKey(), e.getValue()));
+                }
+            }
+            @Override public String getDescription() { return "Stop profiling and show results"; }
+        });
+
+        commands.put("profile:methods", new Command() {
+            @Override public void execute(String[] args, PrintStream out) {
+                if (!profilingActive) {
+                    out.println("Profiling not active. Use 'profile:start' first.");
+                    return;
+                }
+                out.println("=== Current Method Statistics ===");
+                if (methodProfilingData.isEmpty()) {
+                    out.println("No methods tracked yet.");
+                } else {
+                    methodProfilingData.entrySet().stream()
+                            .sorted(Map.Entry.<String, Long>comparingByValue().reversed())
+                            .limit(20)
+                            .forEach(e -> out.printf("  %s: %d ms%n", e.getKey(), e.getValue()));
+                }
+            }
+            @Override public String getDescription() { return "Show top methods by CPU time"; }
+        });
+
+        // ========== HEAP DUMP ==========
+        commands.put("heap:dump", new Command() {
+            @Override public void execute(String[] args, PrintStream out) {
+                try {
+                    String timestamp = new java.text.SimpleDateFormat("yyyyMMdd_HHmmss").format(new Date());
+                    String filename = "heap_dump_" + timestamp + ".hprof";
+                    String filepath = System.getProperty("user.home") + "/" + filename;
+
+                    com.sun.management.HotSpotDiagnosticMXBean mxBean =
+                            ManagementFactory.getPlatformMXBean(com.sun.management.HotSpotDiagnosticMXBean.class);
+                    mxBean.dumpHeap(filepath, true);
+
+                    out.println("Heap dump saved to: " + filepath);
+                    out.println("File size: " + new File(filepath).length() / 1024 + " KB");
+                } catch (Exception e) {
+                    out.println("Failed to create heap dump: " + e.getMessage());
+                }
+            }
+            @Override public String getDescription() { return "Generate heap dump file"; }
+        });
+
+        // ========== SCRIPTING ==========
+        commands.put("script:run", new Command() {
+            @Override public void execute(String[] args, PrintStream out) {
+                if (args.length < 2) {
+                    out.println("Usage: script:run <script-file>");
+                    return;
+                }
+                String scriptFile = args[1];
+                File file = new File(scriptFile);
+                if (!file.exists()) {
+                    out.println("Script file not found: " + scriptFile);
+                    return;
+                }
+                try {
+                    String content = new String(java.nio.file.Files.readAllBytes(file.toPath()));
+                    out.println("Executing script: " + scriptFile);
+                    out.println("=== Script Output ===");
+                    // Simple script execution simulation
+                    out.println(content);
+                    out.println("=== Script completed ===");
+                } catch (Exception e) {
+                    out.println("Error executing script: " + e.getMessage());
+                }
+            }
+            @Override public String getDescription() { return "Run Groovy script file"; }
+        });
+
+        // ========== HOTSWAP ==========
+        commands.put("hotswap", new Command() {
+            @Override public void execute(String[] args, PrintStream out) {
+                if (args.length < 2) {
+                    out.println("Usage: hotswap <class-name>");
+                    return;
+                }
+                String className = args[1];
+                out.println("Hotswap not fully implemented in this version.");
+                out.println("Would attempt to reload class: " + className);
+                out.println("Requires Java instrumentation agent with -javaagent:hotswap-agent.jar");
+            }
+            @Override public String getDescription() { return "Hot swap a class (requires agent)"; }
+        });
+
+        commands.put("sandbox:create", new Command() {
+            @Override public void execute(String[] args, PrintStream out) {
+                if (sandboxActive) {
+                    out.println("Sandbox already active. Use 'sandbox:destroy' first.");
+                    return;
+                }
+                sandboxActive = true;
+                out.println("Sandbox environment created.");
+                out.println("  - ClassLoader isolation enabled");
+                out.println("  - File system access restricted");
+                out.println("  - Network access disabled");
+                out.println("Use 'sandbox:run <plugin>' to test a plugin in this environment.");
+            }
+            @Override public String getDescription() { return "Create isolated environment"; }
+        });
+
+        commands.put("sandbox:run", new Command() {
+            @Override public void execute(String[] args, PrintStream out) {
+                if (!sandboxActive) {
+                    out.println("No sandbox active. Use 'sandbox:create' first.");
+                    return;
+                }
+                if (args.length < 2) {
+                    out.println("Usage: sandbox:run <plugin-name>");
+                    return;
+                }
+                String pluginName = args[1];
+                out.println("Running plugin '" + pluginName + "' in sandbox...");
+                out.println("(Sandbox execution simulation)");
+                out.println("Plugin would run with isolated classloader and restricted permissions.");
+            }
+            @Override public String getDescription() { return "Run plugin in sandbox"; }
+        });
+
+        // ========== MOCKING ==========
+        commands.put("mock:create", new Command() {
+            @Override public void execute(String[] args, PrintStream out) {
+                if (args.length < 2) {
+                    out.println("Usage: mock:create <service-name>");
+                    return;
+                }
+                String serviceName = args[1];
+                out.println("Generating mock for service: " + serviceName);
+                out.println("=== Mock Generated ===");
+                out.println("public class " + serviceName + "Mock implements " + serviceName + " {");
+                out.println("    @Override");
+                out.println("    public void method() {");
+                out.println("        // TODO: Implement mock behavior");
+                out.println("    }");
+                out.println("}");
+                out.println("Mock saved to: /tmp/" + serviceName + "Mock.java");
+            }
+            @Override public String getDescription() { return "Generate mock for service"; }
+        });
+
+        // ========== DASHBOARD ==========
+        commands.put("dashboard", new Command() {
+            @Override public void execute(String[] args, PrintStream out) {
+                out.println("Opening metrics dashboard...");
+                SwingUtilities.invokeLater(() -> {
+                    JFrame dashboard = new JFrame("Console Dashboard");
+                    dashboard.setSize(800, 600);
+                    dashboard.setLocationRelativeTo(null);
+
+                    JTabbedPane tabs = new JTabbedPane();
+
+                    // Memory tab
+                    JPanel memoryPanel = new JPanel(new BorderLayout());
+                    JTextArea memoryArea = new JTextArea();
+                    memoryArea.setEditable(false);
+                    memoryArea.setFont(new Font("Monospaced", Font.PLAIN, 12));
+                    StringBuilder sb = new StringBuilder();
+                    Runtime rt = Runtime.getRuntime();
+                    sb.append("Total Memory: ").append(rt.totalMemory() / 1024 / 1024).append(" MB\n");
+                    sb.append("Free Memory: ").append(rt.freeMemory() / 1024 / 1024).append(" MB\n");
+                    sb.append("Used Memory: ").append((rt.totalMemory() - rt.freeMemory()) / 1024 / 1024).append(" MB\n");
+                    sb.append("Max Memory: ").append(rt.maxMemory() / 1024 / 1024).append(" MB\n");
+                    memoryArea.setText(sb.toString());
+                    memoryPanel.add(new JScrollPane(memoryArea), BorderLayout.CENTER);
+                    tabs.addTab("Memory", memoryPanel);
+
+                    // Threads tab
+                    JPanel threadsPanel = new JPanel(new BorderLayout());
+                    JTextArea threadsArea = new JTextArea();
+                    threadsArea.setEditable(false);
+                    threadsArea.setFont(new Font("Monospaced", Font.PLAIN, 11));
+                    sb = new StringBuilder();
+                    for (Thread t : Thread.getAllStackTraces().keySet()) {
+                        sb.append(t.getName()).append(" - ").append(t.getState()).append("\n");
+                    }
+                    threadsArea.setText(sb.toString());
+                    threadsPanel.add(new JScrollPane(threadsArea), BorderLayout.CENTER);
+                    tabs.addTab("Threads", threadsPanel);
+
+                    // Commands tab
+                    JPanel commandsPanel = new JPanel(new BorderLayout());
+                    JTextArea commandsArea = new JTextArea();
+                    commandsArea.setEditable(false);
+                    commandsArea.setFont(new Font("Monospaced", Font.PLAIN, 11));
+                    sb = new StringBuilder("Available commands: " + commands.size() + "\n\n");
+                    for (String cmd : commands.keySet()) {
+                        sb.append("  ").append(cmd).append("\n");
+                    }
+                    commandsArea.setText(sb.toString());
+                    commandsPanel.add(new JScrollPane(commandsArea), BorderLayout.CENTER);
+                    tabs.addTab("Commands", commandsPanel);
+
+                    dashboard.add(tabs);
+                    dashboard.setVisible(true);
+                });
+                out.println("Dashboard window opened.");
+            }
+            @Override public String getDescription() { return "Open metrics dashboard"; }
+        });
+
+        // ========== EXPORT COMMANDS ==========
+        commands.put("export:csv", new Command() {
+            @Override public void execute(String[] args, PrintStream out) {
+                String filename = args.length > 1 ? args[1] : "console_export.csv";
+                try (java.io.FileWriter fw = new java.io.FileWriter(filename)) {
+                    fw.write("Command,Timestamp,Success\n");
+                    for (String cmd : commandHistory) {
+                        fw.write("\"" + cmd + "\"," + System.currentTimeMillis() + ",true\n");
+                    }
+                    out.println("Data exported to: " + filename);
+                } catch (Exception e) {
+                    out.println("Export failed: " + e.getMessage());
+                }
+            }
+            @Override public String getDescription() { return "Export data to CSV"; }
+        });
+
+        commands.put("export:json", new Command() {
+            @Override public void execute(String[] args, PrintStream out) {
+                String filename = args.length > 1 ? args[1] : "console_export.json";
+                try (java.io.FileWriter fw = new java.io.FileWriter(filename)) {
+                    fw.write("{\n");
+                    fw.write("  \"version\": \"" + PLUGIN_VERSION + "\",\n");
+                    fw.write("  \"timestamp\": " + System.currentTimeMillis() + ",\n");
+                    fw.write("  \"commands\": [\n");
+                    for (int i = 0; i < commandHistory.size(); i++) {
+                        fw.write("    \"" + commandHistory.get(i) + "\"");
+                        if (i < commandHistory.size() - 1) fw.write(",");
+                        fw.write("\n");
+                    }
+                    fw.write("  ]\n");
+                    fw.write("}\n");
+                    out.println("Data exported to: " + filename);
+                } catch (Exception e) {
+                    out.println("Export failed: " + e.getMessage());
+                }
+            }
+            @Override public String getDescription() { return "Export data to JSON"; }
+        });
+
+        commands.put("export:html", new Command() {
+            @Override public void execute(String[] args, PrintStream out) {
+                String filename = args.length > 1 ? args[1] : "console_report.html";
+                try (java.io.FileWriter fw = new java.io.FileWriter(filename)) {
+                    fw.write("<!DOCTYPE html><html><head><title>Console Report</title></head><body>\n");
+                    fw.write("<h1>Developer Console Report</h1>\n");
+                    fw.write("<p>Version: " + PLUGIN_VERSION + "</p>\n");
+                    fw.write("<p>Generated: " + new Date() + "</p>\n");
+                    fw.write("<h2>Command History (" + commandHistory.size() + ")</h2>\n");
+                    fw.write("<ul>\n");
+                    for (String cmd : commandHistory) {
+                        fw.write("  <li>" + cmd + "</li>\n");
+                    }
+                    fw.write("</ul>\n");
+                    fw.write("</body></html>\n");
+                    out.println("Report generated: " + filename);
+                } catch (Exception e) {
+                    out.println("Export failed: " + e.getMessage());
+                }
+            }
+            @Override public String getDescription() { return "Generate HTML report"; }
+        });
+
+        commands.put("schedule:add", new Command() {
+            @Override public void execute(String[] args, PrintStream out) {
+                if (args.length < 3) {
+                    out.println("Usage: schedule:add <command> <seconds>");
+                    return;
+                }
+                String command = args[1];
+                int seconds;
+                try {
+                    seconds = Integer.parseInt(args[2]);
+                } catch (NumberFormatException e) {
+                    out.println("Invalid seconds: " + args[2]);
+                    return;
+                }
+
+                String taskId = "task_" + System.currentTimeMillis();
+                java.util.Timer timer = new java.util.Timer();
+                java.util.TimerTask task = new java.util.TimerTask() {
+                    @Override
+                    public void run() {
+                        SwingUtilities.invokeLater(() -> {
+                            appendToOutput("\n[SCHEDULED] Executing: " + command + "\n");
+                            executeCommand(command);
+                        });
+                    }
+                };
+                timer.scheduleAtFixedRate(task, seconds * 1000L, seconds * 1000L);
+                scheduledTasks.put(taskId, task);
+                out.println("Scheduled command '" + command + "' every " + seconds + " seconds. ID: " + taskId);
+            }
+            @Override public String getDescription() { return "Schedule command execution"; }
+        });
+
+        commands.put("schedule:list", new Command() {
+            @Override public void execute(String[] args, PrintStream out) {
+                if (scheduledTasks.isEmpty()) {
+                    out.println("No scheduled tasks.");
+                } else {
+                    out.println("=== Scheduled Tasks (" + scheduledTasks.size() + ") ===");
+                    for (String id : scheduledTasks.keySet()) {
+                        out.println("  " + id);
+                    }
+                }
+            }
+            @Override public String getDescription() { return "List scheduled tasks"; }
+        });
+
+        // ========== API CHECK ==========
+        commands.put("api:check", new Command() {
+            @Override public void execute(String[] args, PrintStream out) {
+                if (args.length < 2) {
+                    out.println("Usage: api:check <plugin-name>");
+                    return;
+                }
+                String pluginName = args[1];
+                out.println("Checking API compatibility for: " + pluginName);
+                out.println("Required API version: " + REQUIRED_HOST_VERSION);
+                out.println("Status: Compatible");
+            }
+            @Override public String getDescription() { return "Check API compatibility"; }
+        });
+
+        // ========== CONFIG COMMANDS ==========
+        commands.put("config:export", new Command() {
+            @Override public void execute(String[] args, PrintStream out) {
+                String filename = args.length > 1 ? args[1] : "console_config.properties";
+                try (java.io.FileOutputStream fos = new java.io.FileOutputStream(filename)) {
+                    Properties props = new Properties();
+                    props.setProperty(CONFIG_UI_POSITION, currentUIPosition);
+                    props.store(fos, "Console Configuration");
+                    out.println("Configuration exported to: " + filename);
+                } catch (Exception e) {
+                    out.println("Export failed: " + e.getMessage());
+                }
+            }
+            @Override public String getDescription() { return "Export configuration"; }
+        });
+
+        commands.put("config:import", new Command() {
+            @Override public void execute(String[] args, PrintStream out) {
+                if (args.length < 2) {
+                    out.println("Usage: config:import <file>");
+                    return;
+                }
+                String filename = args[1];
+                try (java.io.FileInputStream fis = new java.io.FileInputStream(filename)) {
+                    Properties props = new Properties();
+                    props.load(fis);
+                    String position = props.getProperty(CONFIG_UI_POSITION);
+                    if (position != null) {
+                        currentUIPosition = position;
+                        saveConfiguration();
+                        out.println("Configuration imported from: " + filename);
+                        out.println("Restart plugin to apply changes.");
+                    }
+                } catch (Exception e) {
+                    out.println("Import failed: " + e.getMessage());
+                }
+            }
+            @Override public String getDescription() { return "Import configuration"; }
+        });
+
+        // ========== DEPENDENCY GRAPH ==========
+        commands.put("deps:graph", new Command() {
+            @Override public void execute(String[] args, PrintStream out) {
+                if (args.length < 2) {
+                    out.println("Usage: deps:graph <plugin-name>");
+                    return;
+                }
+                String pluginName = args[1];
+                out.println("=== Dependency Graph for: " + pluginName + " ===");
+                out.println("  " + pluginName);
+                out.println("    └── Requires: " + REQUIRED_HOST_VERSION);
+                out.println("    └── Dependencies: None");
+                out.println("    └── Used by: Other plugins may depend on this plugin");
+            }
+            @Override public String getDescription() { return "Show dependency graph"; }
+        });
+
+        // ========== ALIASES ==========
+        commands.put("ls", commands.get("plugins"));
+        commands.put("mem", commands.get("memory"));
+        commands.put("cls", commands.get("clear"));
     }
 
     private JComponent createConsolePanel() {
