@@ -1324,7 +1324,7 @@ public class DeveloperConsolePlugin extends AbstractPlugin implements Plugin, Me
         this.bottomPanel = panel;
     }
 
-    private void showConsolePanel() {
+    public void showConsolePanel() {
         if (uiBuilder == null) return;
 
         // Re-register to show the panel
@@ -1341,7 +1341,7 @@ public class DeveloperConsolePlugin extends AbstractPlugin implements Plugin, Me
         return button;
     }
 
-    private void showSettings() {
+    public void showSettings() {
         JDialog settingsDialog = new JDialog();
         settingsDialog.setTitle("Developer Console Settings");
         settingsDialog.setModal(true);
@@ -1432,11 +1432,11 @@ public class DeveloperConsolePlugin extends AbstractPlugin implements Plugin, Me
         }
 
         if ("tab".equals(currentUIPosition)) {
-            uiBuilder.addTab(COMPONENT_ID, "Console", consolePanel, icon)
+            uiBuilder.addTab(COMPONENT_ID, "Dev Console", consolePanel, icon)
                     .registerAll();
             log.info("Console UI registered as TAB");
         } else {
-            uiBuilder.addBottomPanel(COMPONENT_ID, "Console", consolePanel, icon)
+            uiBuilder.addBottomPanel(COMPONENT_ID, "Dev Console", consolePanel, icon)
                     .registerAll();
             log.info("Console UI registered as BOTTOM PANEL");
         }
@@ -1456,7 +1456,7 @@ public class DeveloperConsolePlugin extends AbstractPlugin implements Plugin, Me
         appendToOutput(baos.toString());
     }
 
-    private void executeCommand(String line) {
+    public void executeCommand(String line) {
         if (line == null || line.trim().isEmpty()) return;
 
         // Add to history
