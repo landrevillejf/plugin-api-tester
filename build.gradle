@@ -1,0 +1,64 @@
+plugins {
+    id 'java'
+}
+
+group = 'com.protonmail.landrevillejf.console'
+version = '1.0.0'
+
+repositories {
+    mavenCentral()
+    flatDir {
+        dirs "${rootDir}/libs"
+    }
+}
+
+dependencies {
+    compileOnly name: 'plugin-api-3.0.0-SNAPSHOT', ext: 'jar'
+    compileOnly name: 'ide-core-0.3.2-SNAPSHOT', ext: 'jar'
+    compileOnly name: 'IconManager-1.5.0', ext: 'jar'
+
+    compileOnly 'org.projectlombok:lombok:1.18.30'
+    annotationProcessor 'org.projectlombok:lombok:1.18.30'
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+
+jar {
+    manifest {
+        attributes(
+                'Plugin-Class': 'com.protonmail.landrevillejf.console.DeveloperConsolePlugin',
+                'Plugin-Id': 'dev-console',
+                'Plugin-Name': 'Developer Console',
+                'Plugin-Version': project.version,
+                'Plugin-Author': 'Jean-Francois Landreville',
+                'Plugin-Description': 'Provides a developer console for interacting with the IDEs plugin system',
+                'Plugin-Category': 'Productivity',
+                'Required-Host-Version': '3.0.0'
+        )
+    }
+
+    from {
+        configurations.runtimeClasspath.collect { it.isDirectory() ? it : zipTree(it) }
+    }
+
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+}
+
+task buildPlugin(type: Jar) {
+    from sourceSets.main.output
+    manifest {
+        attributes(
+                'Plugin-Class': 'com.protonmail.landrevillejf.console.DeveloperConsolePlugin',
+                'Plugin-Id': 'dev-console',
+                'Plugin-Name': 'Developer Console',
+                'Plugin-Version': project.version
+        )
+    }
+    archiveFileName = "dev-console-${project.version}.jar"
+    destinationDirectory = file('../plugins')
+}
+
+assemble.dependsOn buildPlugin
