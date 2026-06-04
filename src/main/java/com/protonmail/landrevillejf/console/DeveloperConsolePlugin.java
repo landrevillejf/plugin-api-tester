@@ -35,6 +35,24 @@ public class DeveloperConsolePlugin extends AbstractPlugin implements Plugin, Me
 
     private static final String CONFIG_UI_POSITION = "console.ui.position";
 
+    // Ajoute ces constantes pour les couleurs
+    private static final String CONFIG_COLOR_PROMPT = "console.color.prompt";
+    private static final String CONFIG_COLOR_ERROR = "console.color.error";
+    private static final String CONFIG_COLOR_SUCCESS = "console.color.success";
+    private static final String CONFIG_COLOR_WARNING = "console.color.warning";
+    private static final String CONFIG_COLOR_INFO = "console.color.info";
+    private static final String CONFIG_BACKGROUND_COLOR = "console.color.background";
+    private static final String CONFIG_TEXT_COLOR = "console.color.text";
+
+    // Ajoute ces variables d'instance
+    private Color promptColor = Color.GREEN;
+    private Color errorColor = Color.RED;
+    private Color successColor = new Color(0, 255, 0);
+    private Color warningColor = new Color(255, 255, 0);
+    private Color infoColor = new Color(0, 255, 255);
+    private Color backgroundColor = Color.BLACK;
+    private Color textColor = new Color(0, 255, 0);
+
     private ExtendedPluginContext context;
     private UIComponentBuilder uiBuilder;
     private JComponent consolePanel;
@@ -60,6 +78,9 @@ public class DeveloperConsolePlugin extends AbstractPlugin implements Plugin, Me
     private boolean sandboxActive = false;
     // ========== SCHEDULER COMMANDS ==========
     private final Map<String, java.util.TimerTask> scheduledTasks = new HashMap<>();
+    private Map<String, String> customAliases = new HashMap<>();
+    private Map<String, String> pluginVariables = new HashMap<>();
+    private boolean silentMode = false;
 
     public DeveloperConsolePlugin() {
         super(PLUGIN_ID, PLUGIN_NAME, PLUGIN_VERSION,
@@ -103,8 +124,54 @@ public class DeveloperConsolePlugin extends AbstractPlugin implements Plugin, Me
 
     private void loadConfiguration() {
         currentUIPosition = config.getSettingAsString(CONFIG_UI_POSITION, "bottom");
-        log.info("Console UI position: " + currentUIPosition);
+
+        // Charger les couleurs
+        promptColor = loadColor(CONFIG_COLOR_PROMPT, Color.GREEN);
+        errorColor = loadColor(CONFIG_COLOR_ERROR, Color.RED);
+        successColor = loadColor(CONFIG_COLOR_SUCCESS, new Color(0, 255, 0));
+        warningColor = loadColor(CONFIG_COLOR_WARNING, new Color(255, 255, 0));
+        infoColor = loadColor(CONFIG_COLOR_INFO, new Color(0, 255, 255));
+        backgroundColor = loadColor(CONFIG_BACKGROUND_COLOR, Color.BLACK);
+        textColor = loadColor(CONFIG_TEXT_COLOR, new Color(0, 255, 0));
+
+        log.info("Console UI position: {}", currentUIPosition);
     }
+
+    private Color loadColor(String key, Color defaultColor) {
+        String colorHex = config.getSettingAsString(key, null);
+        if (colorHex != null && colorHex.matches("#[0-9A-Fa-f]{6}")) {
+            return Color.decode(colorHex);
+        }
+        return defaultColor;
+    }
+
+    private void saveColor(String key, Color color) {
+        config.setSetting(key, String.format("#%02X%02X%02X", color.getRed(), color.getGreen(), color.getBlue()));
+    }
+
+    private void applyColorTheme() {
+        if (outputPane != null) {
+            outputPane.setBackground(backgroundColor);
+            outputPane.setForeground(textColor);
+
+            // Re-styler le document existant
+            StyledDocument doc = outputPane.getStyledDocument();
+            Style defaultStyle = outputPane.addStyle("default", null);
+            StyleConstants.setForeground(defaultStyle, textColor);
+            doc.setCharacterAttributes(0, doc.getLength(), defaultStyle, true);
+        }
+
+        if (inputField != null) {
+            inputField.setBackground(backgroundColor);
+            inputField.setForeground(textColor);
+            inputField.setCaretColor(textColor);
+        }
+
+        if (statusLabel != null) {
+            statusLabel.setForeground(textColor);
+        }
+    }
+
 
     private void saveConfiguration() {
         config.setSetting(CONFIG_UI_POSITION, currentUIPosition);
@@ -138,6 +205,8 @@ public class DeveloperConsolePlugin extends AbstractPlugin implements Plugin, Me
                 out.println("  settings             - Open plugin settings");
                 out.println("  exit                 - Exit console mode");
                 out.println("  inspect              - Inspect UI components");
+                out.println("  silent               - Toggle silent mode");
+                out.println("  bench <cmd>          - Benchmark a command");
 
                 out.println("\nPLUGIN COMMANDS:");
                 out.println("  plugins              - List loaded plugins");
@@ -161,6 +230,7 @@ public class DeveloperConsolePlugin extends AbstractPlugin implements Plugin, Me
                 out.println("  system               - Show system info");
                 out.println("  env                  - Show environment variables");
                 out.println("  props                - Show system properties");
+                out.println("  dev:classloader      - Show ClassLoader info");
 
                 out.println("\nMONITORING COMMANDS:");
                 out.println("  monitor              - Start monitoring");
@@ -182,7 +252,7 @@ public class DeveloperConsolePlugin extends AbstractPlugin implements Plugin, Me
                 out.println("  heap:dump            - Generate heap dump file");
 
                 out.println("\nSCRIPTING:");
-                out.println("  script:run <file>    - Run Groovy script file");
+                out.println("  script:run <file>    - Run script file");
 
                 out.println("\nHOTSWAP:");
                 out.println("  hotswap <class>      - Hot swap a class");
@@ -205,6 +275,21 @@ public class DeveloperConsolePlugin extends AbstractPlugin implements Plugin, Me
                 out.println("\nSCHEDULER:");
                 out.println("  schedule:add <cmd> <seconds> - Schedule command");
                 out.println("  schedule:list        - List scheduled tasks");
+
+                out.println("\nHISTORY:");
+                out.println("  history:search <text> - Search command history");
+
+                out.println("\nMACROS:");
+                out.println("  macro:record <name>  - Start recording a macro");
+                out.println("  macro:stop           - Stop recording");
+                out.println("  macro:run <name>     - Run a macro");
+                out.println("  macro:save <name>    - Save a macro");
+                out.println("  macro:load <name>    - Load a macro");
+
+                out.println("\nVARIABLES & ALIASES:");
+                out.println("  set <var> <value>    - Set plugin variable");
+                out.println("  get <var>            - Get plugin variable");
+                out.println("  alias <name> <cmd>   - Create custom alias");
 
                 out.println("\nAPI CHECK:");
                 out.println("  api:check <plugin>   - Check API compatibility");
@@ -414,6 +499,34 @@ public class DeveloperConsolePlugin extends AbstractPlugin implements Plugin, Me
                 }
             }
             @Override public String getDescription() { return "Reload a plugin"; }
+        });
+
+        commands.put("bench", new Command() {
+            @Override public void execute(String[] args, PrintStream out) {
+                if (args.length < 2) return;
+                String cmdToBench = String.join(" ", Arrays.copyOfRange(args, 1, args.length));
+                long start = System.nanoTime();
+                executeCommand(cmdToBench);
+                long duration = System.nanoTime() - start;
+                out.printf("Benchmark: %.3f ms%n", duration / 1_000_000.0);
+            }
+            @Override public String getDescription() { return "Benchmark a command"; }
+        });
+
+        commands.put("dev:classloader", new Command() {
+            @Override public void execute(String[] args, PrintStream out) {
+                out.println("ClassLoader: " + getClass().getClassLoader());
+                out.println("Context ClassLoader: " + Thread.currentThread().getContextClassLoader());
+            }
+            @Override public String getDescription() { return "Show ClassLoader info"; }
+        });
+
+        commands.put("silent", new Command() {
+            @Override public void execute(String[] args, PrintStream out) {
+                silentMode = !silentMode;
+                out.println("Silent mode: " + (silentMode ? "ON" : "OFF"));
+            }
+            @Override public String getDescription() { return "Toggle silent mode"; }
         });
 
         // ========== SERVICE COMMANDS ==========
@@ -1048,7 +1161,7 @@ public class DeveloperConsolePlugin extends AbstractPlugin implements Plugin, Me
                     @Override
                     public void run() {
                         SwingUtilities.invokeLater(() -> {
-                            appendToOutput("\n[SCHEDULED] Executing: " + command + "\n");
+                            appendToOutput("\n[SCHEDULED] Executing: " + command + "\n", MessageType.INFO);
                             executeCommand(command);
                         });
                     }
@@ -1087,6 +1200,131 @@ public class DeveloperConsolePlugin extends AbstractPlugin implements Plugin, Me
                 out.println("Status: Compatible");
             }
             @Override public String getDescription() { return "Check API compatibility"; }
+        });
+
+        commands.put("history:search", new Command() {
+            @Override public void execute(String[] args, PrintStream out) {
+                String search = args.length > 1 ? args[1] : "";
+                for (int i = 0; i < commandHistory.size(); i++) {
+                    if (commandHistory.get(i).contains(search)) {
+                        out.printf("%d: %s%n", i, commandHistory.get(i));
+                    }
+                }
+            }
+            @Override public String getDescription() { return "Search command history"; }
+        });
+
+        commands.put("macro:record", new Command() {
+            @Override
+            public void execute(String[] args, PrintStream out) {
+                if (args.length < 2) {
+                    out.println("Usage: macro:record <macro-name>");
+                    return;
+                }
+                String macroName = args[1];
+                out.println("Recording macro: " + macroName);
+                out.println("Type commands to include in the macro. Type 'macro:stop' to finish.");
+                // Macro recording logic would go here
+            }
+
+            @Override
+            public String getDescription() {
+                return "";
+            } /* Enregistrer une séquence */ });
+        commands.put("macro:stop", new Command() {
+            @Override
+            public void execute(String[] args, PrintStream out) {
+                out.println("Stopping macro recording.");
+                // Macro saving logic would go here
+            }
+
+            @Override
+            public String getDescription() {
+                return "Stop macro recording";
+            } /* Arrêter l'enregistrement */ });
+        commands.put("macro:run", new Command() {
+            @Override
+            public void execute(String[] args, PrintStream out) {
+                if (args.length < 2) {
+                    out.println("Usage: macro:run <macro-name>");
+                    return;
+                }
+                String macroName = args[1];
+                out.println("Running macro: " + macroName);
+                // Macro execution logic would go here
+            }
+
+            @Override
+            public String getDescription() {
+                return "Run a macro";
+            } /* Exécuter une macro */ });
+        commands.put("macro:save", new Command() {
+            @Override
+            public void execute(String[] args, PrintStream out) {
+                if (args.length < 2) {
+                    out.println("Usage: macro:save <macro-name>");
+                    return;
+                }
+                String macroName = args[1];
+                out.println("Saving macro: " + macroName);
+                // Macro saving logic would go here
+            }
+
+            @Override
+            public String getDescription() {
+                return "Save a macro";
+            } /* Sauvegarder une macro */ });
+        commands.put("macro:load", new Command() {
+            @Override
+            public void execute(String[] args, PrintStream out) {
+                if (args.length < 2) {
+                    out.println("Usage: macro:load <macro-name>");
+                    return;
+                }
+                String macroName = args[1];
+                out.println("Loading macro: " + macroName);
+                // Macro loading logic would go here
+            }
+
+            @Override
+            public String getDescription() {
+                return "Load a macro";
+            } /* Charger une macro */ });
+
+        commands.put("alias", new Command() {
+            @Override public void execute(String[] args, PrintStream out) {
+                if (args.length < 3) {
+                    out.println("Usage: alias <name> <command>");
+                    return;
+                }
+                customAliases.put(args[1], String.join(" ", Arrays.copyOfRange(args, 2, args.length)));
+                out.println("Alias created: " + args[1] + " -> " + customAliases.get(args[1]));
+            }
+            @Override public String getDescription() { return "Create custom alias"; }
+        });
+
+        commands.put("set", new Command() {
+            @Override public void execute(String[] args, PrintStream out) {
+                if (args.length < 3) {
+                    out.println("Usage: set <var> <value>");
+                    return;
+                }
+                pluginVariables.put(args[1], args[2]);
+                out.println(args[1] + " = " + args[2]);
+            }
+            @Override public String getDescription() { return "Set plugin variable"; }
+        });
+
+        commands.put("get", new Command() {
+            @Override public void execute(String[] args, PrintStream out) {
+                if (args.length < 2) {
+                    out.println("Usage: get <var>");
+                    return;
+                }
+                String value = pluginVariables.get(args[1]);
+                out.println(value != null ? value : "Variable not found");
+            }
+            @Override public String getDescription() { return "Get plugin variable"; }
         });
 
         // ========== CONFIG COMMANDS ==========
@@ -1164,7 +1402,7 @@ public class DeveloperConsolePlugin extends AbstractPlugin implements Plugin, Me
         clearBtn.setIcon(IconManager.createGlassIcon(Color.RED, "X", 16, 2));
         clearBtn.addActionListener(e -> {
             if (outputPane != null) outputPane.setText("");
-            appendToOutput("Console cleared.\n");
+            appendToOutput("Console cleared.\n", MessageType.INFO);
         });
         toolBar.add(clearBtn);
 
@@ -1347,43 +1585,156 @@ public class DeveloperConsolePlugin extends AbstractPlugin implements Plugin, Me
         settingsDialog.setModal(true);
         settingsDialog.setDefaultCloseOperation(JDialog.DISPOSE_ON_CLOSE);
 
-        JPanel settingsPanel = new JPanel(new GridBagLayout());
+        JTabbedPane tabbedPane = new JTabbedPane();
+
+        // ========== GENERAL TAB ==========
+        JPanel generalPanel = new JPanel(new GridBagLayout());
         GridBagConstraints gbc = new GridBagConstraints();
         gbc.insets = new Insets(10, 10, 10, 10);
         gbc.anchor = GridBagConstraints.WEST;
         gbc.fill = GridBagConstraints.HORIZONTAL;
 
         gbc.gridx = 0; gbc.gridy = 0;
-        settingsPanel.add(new JLabel("UI Position:"), gbc);
-
+        generalPanel.add(new JLabel("UI Position:"), gbc);
         JComboBox<String> uiPositionCombo = new JComboBox<>(new String[]{"bottom", "tab"});
         uiPositionCombo.setSelectedItem(currentUIPosition);
         gbc.gridx = 1;
-        settingsPanel.add(uiPositionCombo, gbc);
+        generalPanel.add(uiPositionCombo, gbc);
 
         gbc.gridx = 0; gbc.gridy = 1;
         gbc.gridwidth = 2;
         JLabel helpLabel = new JLabel("<html><font color='gray' size='2'>" +
                 "• bottom: Shows panel at the bottom of the IDE<br>" +
                 "• tab: Shows panel as a separate tab</font></html>");
-        settingsPanel.add(helpLabel, gbc);
+        generalPanel.add(helpLabel, gbc);
         gbc.gridwidth = 1;
 
-        gbc.gridx = 0; gbc.gridy = 2;
-        gbc.gridwidth = 2;
-        settingsPanel.add(new JSeparator(), gbc);
+        tabbedPane.addTab("General", generalPanel);
 
-        gbc.gridy = 3;
-        gbc.gridwidth = 2;
+        // ========== COLORS TAB ==========
+        JPanel colorsPanel = new JPanel(new GridBagLayout());
+        GridBagConstraints cgbc = new GridBagConstraints();
+        cgbc.insets = new Insets(8, 8, 8, 8);
+        cgbc.anchor = GridBagConstraints.WEST;
+        cgbc.fill = GridBagConstraints.HORIZONTAL;
+
+        int row = 0;
+
+        // Background Color
+        cgbc.gridx = 0; cgbc.gridy = row;
+        colorsPanel.add(new JLabel("Background Color:"), cgbc);
+        JButton bgColorBtn = createColorButton(backgroundColor);
+        cgbc.gridx = 1;
+        colorsPanel.add(bgColorBtn, cgbc);
+        row++;
+
+        // Text Color
+        cgbc.gridx = 0; cgbc.gridy = row;
+        colorsPanel.add(new JLabel("Text Color:"), cgbc);
+        JButton textColorBtn = createColorButton(textColor);
+        cgbc.gridx = 1;
+        colorsPanel.add(textColorBtn, cgbc);
+        row++;
+
+        // Prompt Color
+        cgbc.gridx = 0; cgbc.gridy = row;
+        colorsPanel.add(new JLabel("Prompt Color (> ):"), cgbc);
+        JButton promptColorBtn = createColorButton(promptColor);
+        cgbc.gridx = 1;
+        colorsPanel.add(promptColorBtn, cgbc);
+        row++;
+
+        // Error Color
+        cgbc.gridx = 0; cgbc.gridy = row;
+        colorsPanel.add(new JLabel("Error Color:"), cgbc);
+        JButton errorColorBtn = createColorButton(errorColor);
+        cgbc.gridx = 1;
+        colorsPanel.add(errorColorBtn, cgbc);
+        row++;
+
+        // Success Color
+        cgbc.gridx = 0; cgbc.gridy = row;
+        colorsPanel.add(new JLabel("Success Color:"), cgbc);
+        JButton successColorBtn = createColorButton(successColor);
+        cgbc.gridx = 1;
+        colorsPanel.add(successColorBtn, cgbc);
+        row++;
+
+        // Warning Color
+        cgbc.gridx = 0; cgbc.gridy = row;
+        colorsPanel.add(new JLabel("Warning Color:"), cgbc);
+        JButton warningColorBtn = createColorButton(warningColor);
+        cgbc.gridx = 1;
+        colorsPanel.add(warningColorBtn, cgbc);
+        row++;
+
+        // Info Color
+        cgbc.gridx = 0; cgbc.gridy = row;
+        colorsPanel.add(new JLabel("Info Color:"), cgbc);
+        JButton infoColorBtn = createColorButton(infoColor);
+        cgbc.gridx = 1;
+        colorsPanel.add(infoColorBtn, cgbc);
+        row++;
+
+        // Reset button
+        cgbc.gridx = 0; cgbc.gridy = row;
+        cgbc.gridwidth = 2;
+        JButton resetBtn = new JButton("Reset to Default Colors");
+        resetBtn.addActionListener(e -> {
+            bgColorBtn.setBackground(Color.BLACK);
+            textColorBtn.setBackground(new Color(0, 255, 0));
+            promptColorBtn.setBackground(Color.GREEN);
+            errorColorBtn.setBackground(Color.RED);
+            successColorBtn.setBackground(new Color(0, 255, 0));
+            warningColorBtn.setBackground(new Color(255, 255, 0));
+            infoColorBtn.setBackground(new Color(0, 255, 255));
+        });
+        colorsPanel.add(resetBtn, cgbc);
+        cgbc.gridwidth = 1;
+
+        tabbedPane.addTab("Colors", colorsPanel);
+
+        // ========== BUTTON PANEL ==========
         JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT));
+
+        JButton previewBtn = new JButton("Preview");
+        previewBtn.addActionListener(e -> {
+            // Preview colors in console
+            appendToOutput("\n=== Color Preview ===\n", textColor);
+            appendToOutput("Normal text\n", textColor);
+            appendToOutput("Success message\n", successColor);
+            appendToOutput("Warning message\n", warningColor);
+            appendToOutput("Error message\n", errorColor);
+            appendToOutput("Info message\n", infoColor);
+            appendToOutput("> Prompt\n", promptColor);
+        });
 
         JButton saveButton = new JButton("Save & Close");
         saveButton.addActionListener(e -> {
             String oldPosition = currentUIPosition;
             String newPosition = (String) uiPositionCombo.getSelectedItem();
-
             currentUIPosition = newPosition;
+
+            // Save colors
+            saveColor(CONFIG_BACKGROUND_COLOR, bgColorBtn.getBackground());
+            saveColor(CONFIG_TEXT_COLOR, textColorBtn.getBackground());
+            saveColor(CONFIG_COLOR_PROMPT, promptColorBtn.getBackground());
+            saveColor(CONFIG_COLOR_ERROR, errorColorBtn.getBackground());
+            saveColor(CONFIG_COLOR_SUCCESS, successColorBtn.getBackground());
+            saveColor(CONFIG_COLOR_WARNING, warningColorBtn.getBackground());
+            saveColor(CONFIG_COLOR_INFO, infoColorBtn.getBackground());
+
+            // Update instance colors
+            backgroundColor = bgColorBtn.getBackground();
+            textColor = textColorBtn.getBackground();
+            promptColor = promptColorBtn.getBackground();
+            errorColor = errorColorBtn.getBackground();
+            successColor = successColorBtn.getBackground();
+            warningColor = warningColorBtn.getBackground();
+            infoColor = infoColorBtn.getBackground();
+
             saveConfiguration();
+            applyColorTheme();
 
             settingsDialog.dispose();
 
@@ -1407,17 +1758,32 @@ public class DeveloperConsolePlugin extends AbstractPlugin implements Plugin, Me
         JButton cancelButton = new JButton("Cancel");
         cancelButton.addActionListener(e -> settingsDialog.dispose());
 
+        buttonPanel.add(previewBtn);
         buttonPanel.add(saveButton);
         buttonPanel.add(cancelButton);
-        settingsPanel.add(buttonPanel, gbc);
 
         settingsDialog.setLayout(new BorderLayout());
-        settingsDialog.add(settingsPanel, BorderLayout.CENTER);
+        settingsDialog.add(tabbedPane, BorderLayout.CENTER);
+        settingsDialog.add(buttonPanel, BorderLayout.SOUTH);
 
         settingsDialog.pack();
-        settingsDialog.setSize(450, 350);
+        settingsDialog.setSize(500, 500);
         settingsDialog.setLocationRelativeTo(null);
         settingsDialog.setVisible(true);
+    }
+
+    private JButton createColorButton(Color initialColor) {
+        JButton button = new JButton("Choose Color");
+        button.setBackground(initialColor);
+        button.setOpaque(true);
+        button.setBorderPainted(false);
+        button.addActionListener(e -> {
+            Color newColor = JColorChooser.showDialog(button, "Choose Color", button.getBackground());
+            if (newColor != null) {
+                button.setBackground(newColor);
+            }
+        });
+        return button;
     }
 
     private void registerUIComponents() {
@@ -1453,17 +1819,16 @@ public class DeveloperConsolePlugin extends AbstractPlugin implements Plugin, Me
         out.println("Use Up/Down arrows for command history");
         out.println("Use Tab or dropdown for command completion");
         out.println();
-        appendToOutput(baos.toString());
+        appendToOutput(baos.toString(), MessageType.INFO);
     }
 
     public void executeCommand(String line) {
         if (line == null || line.trim().isEmpty()) return;
 
-        // Add to history
         commandHistory.add(line);
         historyIndex = -1;
 
-        appendToOutput("\n> " + line + "\n");
+        appendToOutput("\n> " + line + "\n", MessageType.PROMPT);
 
         String[] parts = line.trim().split("\\s+");
         String cmd = parts[0].toLowerCase();
@@ -1473,7 +1838,6 @@ public class DeveloperConsolePlugin extends AbstractPlugin implements Plugin, Me
             ByteArrayOutputStream baos = new ByteArrayOutputStream();
             PrintStream out = new PrintStream(baos);
 
-            // Show progress for long operations
             if (progressBar != null) {
                 SwingUtilities.invokeLater(() -> {
                     progressBar.setIndeterminate(true);
@@ -1488,13 +1852,13 @@ public class DeveloperConsolePlugin extends AbstractPlugin implements Plugin, Me
                 out.flush();
                 String output = baos.toString();
                 if (output != null && !output.isEmpty()) {
-                    appendToOutput(output);
+                    appendToOutput(output, MessageType.NORMAL);
                 }
                 if (duration > 100) {
-                    appendToOutput(String.format("\n[Command completed in %d ms]\n", duration));
+                    appendToOutput(String.format("\n[Command completed in %d ms]\n", duration), MessageType.INFO);
                 }
             } catch (Exception e) {
-                appendToOutput("Error: " + e.getMessage() + "\n");
+                appendToOutput("Error: " + e.getMessage() + "\n", MessageType.ERROR);
                 log.error("Command execution error", e);
                 if (context != null && context.getLoggingService() != null) {
                     context.getLoggingService().log(PLUGIN_ID, PluginLoggingService.LogLevel.ERROR,
@@ -1509,7 +1873,7 @@ public class DeveloperConsolePlugin extends AbstractPlugin implements Plugin, Me
                 }
             }
         } else {
-            appendToOutput("Unknown command: " + cmd + ". Type 'help' for available commands.\n");
+            appendToOutput("Unknown command: " + cmd + ". Type 'help' for available commands.\n", MessageType.ERROR);
         }
 
         if (inputField != null) {
@@ -1537,6 +1901,33 @@ public class DeveloperConsolePlugin extends AbstractPlugin implements Plugin, Me
             }
         });
     }
+
+    public void appendToOutput(String text, MessageType type) {
+        Color color = switch (type) {
+            case ERROR -> errorColor;
+            case SUCCESS -> successColor;
+            case WARNING -> warningColor;
+            case INFO -> infoColor;
+            case PROMPT -> promptColor;
+            default -> textColor;
+        };
+        appendToOutput(text, color);
+    }
+
+    public enum MessageType { NORMAL, ERROR, SUCCESS, WARNING, INFO, PROMPT }
+
+    // Différentes couleurs pour les types de messages
+    private void appendToOutput(String text, Color color) {
+        SwingUtilities.invokeLater(() -> {
+            try {
+                StyledDocument doc = outputPane.getStyledDocument();
+                Style style = outputPane.addStyle("color", null);
+                StyleConstants.setForeground(style, color);
+                doc.insertString(doc.getLength(), text, style);
+            } catch (BadLocationException e) {}
+        });
+    }
+// Utilisation: appendToOutput("ERROR: ", Color.RED);
 
     @Override
     public java.util.List<JMenuItem> getMenuItems() {
@@ -1587,6 +1978,8 @@ public class DeveloperConsolePlugin extends AbstractPlugin implements Plugin, Me
         }
 
         registerUIComponents();
+
+        SwingUtilities.invokeLater(this::applyColorTheme);
 
         if (context != null) {
             context.logInfo("Developer Console Plugin enabled");
